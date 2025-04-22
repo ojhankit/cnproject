@@ -1,2 +1,2 @@
-Client Port: 6002, Balance: 100.00
-Client Port: 6004, Balance: 100.00
+Client 6006 started with balance ₹90.0
+Client 6003 started with balance ₹80.0
