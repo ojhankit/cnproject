@@ -1,61 +1,67 @@
-import java.io.*;
 import java.net.*;
+import java.io.*;
 import java.util.*;
 
 public class PaymentServer {
-    private static final int BUFFER_SIZE = 1024;
-    private DatagramSocket socket;
-    private int port;
 
-    public PaymentServer(int port) throws SocketException {
-        this.port = port;
-        this.socket = new DatagramSocket(port);
-        System.out.println("Server listening on port " + port);
-    }
+    private static final String CLIENT_FILE = "clients.txt"; // Clients record file
+    private static final String TRANSACTION_FILE = "transactions.txt"; // Transactions record file
 
-    public void start() {
-        byte[] buffer = new byte[BUFFER_SIZE];
+    public static void main(String[] args) {
+        try {
+            DatagramSocket serverSocket = new DatagramSocket(5000); // Listening on port 5000
+            System.out.println("Server is running on port 5000");
 
-        while (true) {
-            try {
-                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-                socket.receive(packet);
+            // Create or open the clients.txt file to store client information
+            FileWriter clientWriter = new FileWriter(CLIENT_FILE, true);
+            // Create or open the transactions.txt file to store transaction logs
+            FileWriter transactionWriter = new FileWriter(TRANSACTION_FILE, true);
 
-                String received = new String(packet.getData(), 0, packet.getLength());
-                System.out.println("Received: " + received);
+            // Set for unique client ports
+            Set<Integer> clientPorts = new HashSet<>();
 
-                if (received.startsWith("PAY:")) {
-                    handlePayment(packet, received);
+            while (true) {
+                byte[] receiveData = new byte[1024];
+                DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
+                serverSocket.receive(receivePacket);
+
+                // Get the incoming message from the client
+                String message = new String(receivePacket.getData(), 0, receivePacket.getLength());
+                InetAddress clientAddress = receivePacket.getAddress();
+                int clientPort = receivePacket.getPort();
+                System.out.println("Received message from client: " + message);
+
+                // Store client information if new client
+                if (!clientPorts.contains(clientPort)) {
+                    clientPorts.add(clientPort);
+                    clientWriter.write("Client Port: " + clientPort + ", Balance: 100.00\n");
+                    System.out.println("New client added: Port " + clientPort);
                 }
-            } catch (IOException e) {
-                e.printStackTrace();
+
+                // Process message and forward it to the recipient client
+                String[] parts = message.split(":");
+                if (parts.length == 3) {
+                    String senderPort = parts[0];
+                    String receiverPort = parts[1];
+                    String amount = parts[2];
+
+                    // Now forward this message to the receiver client
+                    InetAddress receiverAddress = InetAddress.getByName("localhost");
+                    DatagramPacket sendPacket = new DatagramPacket(message.getBytes(), message.length(),
+                            receiverAddress, Integer.parseInt(receiverPort));
+                    serverSocket.send(sendPacket);
+                    System.out.println("Forwarded payment request to client on port " + receiverPort);
+
+                    // Log the transaction in the transactions.txt file
+                    transactionWriter.write("Sender Port: " + senderPort + ", Receiver Port: " + receiverPort + ", Amount: " + amount + "\n");
+                    System.out.println("Transaction logged.");
+                } else {
+                    System.out.println("Invalid message format received.");
+                }
             }
+
+        } catch (Exception e) {
+            e.printStackTrace();
         }
-    }
-
-    private void handlePayment(DatagramPacket packet, String message) throws IOException {
-        String[] parts = message.split(":");
-        int seq = Integer.parseInt(parts[1]);
-        String fromWallet = parts[2];
-        double amount = Double.parseDouble(parts[3]);
-
-        System.out.printf("Payment of $%.2f received from %s | Processing payment...\n", amount, fromWallet);
-
-        // Acknowledge the payment
-        String ack = "ACK:" + seq;
-        DatagramPacket ackPacket = new DatagramPacket(
-                ack.getBytes(), ack.length(),
-                packet.getAddress(), packet.getPort());
-        socket.send(ackPacket);
-        System.out.println("Sent acknowledgment for sequence " + seq);
-    }
-
-    public static void main(String[] args) throws Exception {
-        Scanner input = new Scanner(System.in);
-        System.out.print("Enter server port: ");
-        int port = input.nextInt();
-
-        PaymentServer server = new PaymentServer(port);
-        server.start();
     }
 }
