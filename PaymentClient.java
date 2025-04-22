@@ -1,147 +1,133 @@
 // PaymentClient.java
+import java.io.*;
 import java.net.*;
 import java.util.*;
-import java.io.*;
 
 public class PaymentClient {
-    private static final String CLIENT_FILE = "clients.txt";
-    private static final String TRANSACTION_FILE = "transactions.txt";
-
-    private static int clientPort;
+    private static int port;
     private static double balance;
-    private static DatagramSocket sendSocket;
-    private static List<String> pendingRequests = Collections.synchronizedList(new ArrayList<>());
+    private static DatagramSocket socket;
+    private static final String CLIENTS_FILE = "clients.txt";
+    private static final String TRANSACTION_FILE = "transactions.txt";
+    private static final String LOGGER_IP = "localhost";
+    private static final int LOGGER_PORT = 7000;
 
-    public static void main(String[] args) {
-        try {
-            clearFileOnStart(CLIENT_FILE);
-            clearFileOnStart(TRANSACTION_FILE);
+    public static void main(String[] args) throws Exception {
+        Scanner sc = new Scanner(System.in);
 
-            Scanner scanner = new Scanner(System.in);
-            sendSocket = new DatagramSocket();
-            InetAddress localhost = InetAddress.getByName("localhost");
-            
-            System.out.print("Enter your port: ");
-            clientPort = scanner.nextInt();
+        // Clear files if first run
+        clearFiles();
 
-            System.out.print("Enter starting balance: ");
-            balance = scanner.nextDouble();
-            scanner.nextLine();
+        System.out.print("Enter your port: ");
+        port = Integer.parseInt(sc.nextLine());
+        System.out.print("Enter starting balance: ");
+        balance = Double.parseDouble(sc.nextLine());
 
-            addClientToFile();
+        socket = new DatagramSocket(port);
+        addClientToFile(port);
 
-            // Start listener thread
-            new Thread(() -> listen()).start();
+        logToServer("Client started on port: " + port + " with balance: " + balance);
 
-            while (true) {
-                System.out.println("\n1. Send Payment");
-                System.out.println("2. Check Balance");
-                System.out.println("3. Exit");
-                System.out.println("4. Respond to Pending Requests");
-                System.out.print("Enter choice: ");
-
-                int choice = scanner.nextInt();
-                scanner.nextLine();
-
-                switch (choice) {
-                    case 1:
-                        System.out.print("Enter receiver port: ");
-                        int receiverPort = scanner.nextInt();
-                        System.out.print("Enter amount: ");
-                        double amount = scanner.nextDouble();
-                        scanner.nextLine();
-
-                        String msg = "REQUEST:" + clientPort + ":" + amount;
-                        sendPacket(msg, receiverPort);
-                        break;
-
-                    case 2:
-                        System.out.println("Balance: ₹" + balance);
-                        break;
-
-                    case 3:
-                        sendSocket.close();
-                        System.out.println("Client closed.");
-                        System.exit(0);
-                        break;
-
-                    case 4:
-                        if (pendingRequests.isEmpty()) {
-                            System.out.println("No pending requests.");
-                        } else {
-                            for (String req : new ArrayList<>(pendingRequests)) {
-                                System.out.println("Request: " + req);
-                                System.out.print("Type 'yes' to accept: ");
-                                String res = scanner.nextLine();
-                                if (res.equalsIgnoreCase("yes")) {
-                                    String[] parts = req.split(":");
-                                    int senderPort = Integer.parseInt(parts[1]);
-                                    double amt = Double.parseDouble(parts[2]);
-                                    balance += amt;
-                                    logTransaction(senderPort, clientPort, amt);
-                                    sendPacket("ACCEPTED", senderPort);
-                                } else {
-                                    System.out.println("Rejected.");
-                                }
-                                pendingRequests.remove(req);
-                            }
-                        }
-                        break;
-                    default:
-                        System.out.println("Invalid choice.");
+        Thread receiver = new Thread(() -> {
+            try {
+                while (true) {
+                    byte[] buffer = new byte[1024];
+                    DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                    socket.receive(packet);
+                    String message = new String(packet.getData(), 0, packet.getLength());
+                    handleIncomingMessage(message);
                 }
+            } catch (Exception e) {
+                System.out.println("Receiver closed.");
             }
+        });
+        receiver.start();
 
-        } catch (Exception e) {
-            e.printStackTrace();
+        while (true) {
+            System.out.println("\n1. Send Payment\n2. Check Balance\n3. Disconnect");
+            System.out.print(">> ");
+            int choice = Integer.parseInt(sc.nextLine());
+
+            if (choice == 1) {
+                System.out.print("Enter receiver port: ");
+                int recvPort = Integer.parseInt(sc.nextLine());
+                System.out.print("Enter amount: ");
+                double amount = Double.parseDouble(sc.nextLine());
+                if (balance < amount) {
+                    System.out.println("Insufficient balance.");
+                    continue;
+                }
+                String message = port + ":" + recvPort + ":" + amount;
+                sendMessage(message, recvPort);
+                logToServer("Sent payment request: " + message);
+            } else if (choice == 2) {
+                System.out.println("Current Balance: " + balance);
+            } else if (choice == 3) {
+                logToServer("Client on port " + port + " disconnected.");
+                socket.close();
+                break;
+            } else {
+                System.out.println("Invalid option.");
+            }
         }
     }
 
-    private static void listen() {
-        try {
-            DatagramSocket receiveSocket = new DatagramSocket(clientPort);
-            byte[] buf = new byte[1024];
+    private static void handleIncomingMessage(String message) throws Exception {
+        if (message.startsWith("ACK:")) {
+            System.out.println(message);
+            return;
+        }
 
-            while (true) {
-                DatagramPacket packet = new DatagramPacket(buf, buf.length);
-                receiveSocket.receive(packet);
+        String[] parts = message.split(":");
+        if (parts.length != 3) return;
+        int senderPort = Integer.parseInt(parts[0]);
+        int recvPort = Integer.parseInt(parts[1]);
+        double amount = Double.parseDouble(parts[2]);
 
-                String msg = new String(packet.getData(), 0, packet.getLength());
+        if (recvPort != port) return;
 
-                if (msg.startsWith("REQUEST")) {
-                    pendingRequests.add(msg);
-                    System.out.println("\n\uD83D\uDD14 New payment request received. Choose option 4 to respond.");
-                } else if (msg.equals("ACCEPTED")) {
-                    System.out.println("\n\u2705 Your payment was accepted.");
-                    balance -= 40; // Assume 40 for now or track sent value
-                }
-            }
-        } catch (Exception e) {
-            System.out.println("Receiver stopped.");
+        System.out.println("\n? Incoming Payment Request ?\nFrom: " + senderPort + " Amount: " + amount);
+        System.out.print(">> Accept (yes/no): ");
+        Scanner sc = new Scanner(System.in);
+        String decision = sc.nextLine();
+
+        if (decision.equalsIgnoreCase("yes")) {
+            balance += amount;
+            logToServer("Accepted payment of " + amount + " from " + senderPort);
+            addTransaction(senderPort, port, amount);
+            sendMessage("ACK: Payment of " + amount + " accepted by " + port, senderPort);
+        } else {
+            logToServer("Declined payment of " + amount + " from " + senderPort);
         }
     }
 
-    private static void sendPacket(String msg, int port) throws IOException {
-        byte[] data = msg.getBytes();
-        DatagramPacket packet = new DatagramPacket(data, data.length, InetAddress.getByName("localhost"), port);
-        sendSocket.send(packet);
+    private static void sendMessage(String msg, int targetPort) throws IOException {
+        byte[] buffer = msg.getBytes();
+        DatagramPacket packet = new DatagramPacket(buffer, buffer.length, InetAddress.getByName("localhost"), targetPort);
+        socket.send(packet);
     }
 
-    private static void addClientToFile() throws IOException {
-        FileWriter fw = new FileWriter(CLIENT_FILE, true);
-        fw.write("Client " + clientPort + " started with balance ₹" + balance + "\n");
-        fw.close();
+    private static void logToServer(String log) throws IOException {
+        byte[] data = log.getBytes();
+        DatagramPacket packet = new DatagramPacket(data, data.length, InetAddress.getByName(LOGGER_IP), LOGGER_PORT);
+        socket.send(packet);
     }
 
-    private static void logTransaction(int from, int to, double amount) throws IOException {
-        FileWriter fw = new FileWriter(TRANSACTION_FILE, true);
-        fw.write("From: " + from + ", To: " + to + ", Amount: ₹" + amount + "\n");
-        fw.close();
+    private static void addClientToFile(int port) throws IOException {
+        FileWriter writer = new FileWriter(CLIENTS_FILE, true);
+        writer.write("Client Port: " + port + "\n");
+        writer.close();
     }
 
-    private static void clearFileOnStart(String file) throws IOException {
-        FileWriter fw = new FileWriter(file, false); // overwrite mode
-        fw.write("");
-        fw.close();
+    private static void addTransaction(int from, int to, double amt) throws IOException {
+        FileWriter writer = new FileWriter(TRANSACTION_FILE, true);
+        writer.write("From: " + from + " To: " + to + " Amount: " + amt + "\n");
+        writer.close();
+    }
+
+    private static void clearFiles() throws IOException {
+        new FileWriter(CLIENTS_FILE, false).close();
+        new FileWriter(TRANSACTION_FILE, false).close();
+        new FileWriter("server_log.txt", false).close();
     }
 }

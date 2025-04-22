@@ -1,0 +1,3 @@
+Client started on port: 7004 with balance: 89.0
+Sent payment request: 7002:7004:49.0
+Accepted payment of 49.0 from 7002
